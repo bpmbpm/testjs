@@ -1,2 +1,2 @@
 import {greet1} from './greet.js';
-greet ('Hello");
+greet1 ('Hello");
