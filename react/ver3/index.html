@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VAD Просмотрщик (диагностика)</title>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <div id="root">
+        <!-- Здесь будет сообщение об ошибке, если что-то пойдёт не так -->
+        <div id="error-message" style="display: none; color: red; padding: 20px; background: #fee; border: 1px solid red; margin: 20px; border-radius: 8px;"></div>
+    </div>
+
+    <!-- ===== ДИАГНОСТИКА ЗАГРУЗКИ ===== -->
+    <script>
+        // Перехватываем ошибки на раннем этапе
+        window.onerror = function(message, source, lineno, colno, error) {
+            document.getElementById('root').innerHTML = `
+                <div style="color: red; padding: 20px; background: #fee; border: 1px solid red; margin: 20px; border-radius: 8px;">
+                    <h2>⚠️ Ошибка загрузки приложения</h2>
+                    <p><strong>Сообщение:</strong> ${message}</p>
+                    <p><strong>Источник:</strong> ${source}</p>
+                    <p><strong>Строка:</strong> ${lineno}, колонка: ${colno}</p>
+                    <pre style="background: #f5f5f5; padding: 10px; overflow: auto; max-height: 200px;">${error ? error.stack : 'Нет стека'}</pre>
+                </div>
+            `;
+            console.error('Глобальная ошибка:', error);
+            return true;
+        };
+
+        console.log('=== ДИАГНОСТИКА ===');
+        console.log('1. Начало загрузки страницы');
+        console.log('2. Проверка поддержки браузера...');
+    </script>
+
+    <!-- ===== ПОДКЛЮЧЕНИЕ REACT И Babel ===== -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script>
+        console.log('3. React и Babel загружены');
+        if (typeof React === 'undefined') {
+            console.error('React не загружен!');
+            document.getElementById('root').innerHTML = '<div style="color:red;">React не загружен. Проверьте интернет-соединение.</div>';
+        }
+        if (typeof ReactDOM === 'undefined') {
+            console.error('ReactDOM не загружен!');
+            document.getElementById('root').innerHTML = '<div style="color:red;">ReactDOM не загружен. Проверьте интернет-соединение.</div>';
+        }
+    </script>
+
+    <!-- ===== ВСТРОЕННЫЙ КОНФИГ ===== -->
+    <script>
+        console.log('4. Загрузка конфига');
+        try {
+            window.CONFIG = {
+                folderPath: './svg',
+                defaultExpanded: true,
+                maxStages: 8,
+            };
+            window.CONFIG_YAML = `
+folderPath: "./svg"
+defaultExpanded: true
+maxStages: 8
+`;
+            console.log('   Конфиг загружен:', window.CONFIG);
+        } catch (e) {
+            console.error('Ошибка загрузки конфига:', e);
+            throw e;
+        }
+    </script>
+
+    <!-- ===== ОСНОВНОЙ КОД ПРИЛОЖЕНИЯ (Babel трансформирует JSX) ===== -->
+    <script type="text/babel">
+        console.log('5. Начало выполнения основного кода (Babel)');
+
+        // Обёртка для перехвата ошибок внутри React
+        function renderApp() {
+            try {
+                console.log('6. Определение компонентов...');
+
+                /* ========================================================================
+                   ГРУППА 1: УТИЛИТЫ ДЛЯ РАБОТЫ С ФАЙЛАМИ И SVG
+                   ======================================================================== */
+
+                function extractStagesFromSVG(svgText) {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(svgText, 'image/svg+xml');
+                    const rects = doc.querySelectorAll('rect');
+                    const texts = doc.querySelectorAll('text');
+                    const stageTexts = [];
+                    texts.forEach(text => {
+                        const content = text.textContent.trim();
+                        if (!content.includes('Количество этапов') &&
+                            !content.includes('диаграмма') &&
+                            content.length > 0) {
+                            stageTexts.push(content);
+                        }
+                    });
+                    if (stageTexts.length > 0 && stageTexts.length === rects.length - 1) {
+                        return stageTexts;
+                    } else {
+                        const count = Math.max(rects.length - 1, 5);
+                        return Array.from({ length: count }, (_, i) => `Этап ${i+1}`);
+                    }
+                }
+
+                function extractPropertiesFromSVG(svgText) {
+                    const stages = extractStagesFromSVG(svgText);
+                    return {
+                        'Количество этапов': stages.length,
+                        'Этапы': stages.join(' → '),
+                        'Длительность (план)': (stages.length * 2) + ' дн.',
+                        'Ответственный': 'Отдел развития',
+                        'Версия': '1.0',
+                        'Дата создания': new Date().toLocaleDateString('ru-RU'),
+                        'Тип': 'VAD-диаграмма (загружена)',
+                    };
+                }
+
+                function buildTreeFromFileNames(fileNames) {
+                    const nodes = {};
+                    fileNames.forEach(fullName => {
+                        nodes[fullName] = {
+                            id: fullName,
+                            name: fullName,
+                            children: [],
+                            loaded: false,
+                            svgContent: null,
+                            properties: {},
+                            stages: [],
+                        };
+                    });
+
+                    const rootIds = [];
+                    const childMap = {};
+                    fileNames.forEach(fullName => {
+                        const parts = fullName.replace(/\.svg$/i, '').split('-');
+                        if (parts.length > 1) {
+                            const parentBase = parts.slice(0, -1).join('-');
+                            const parentFull = parentBase + '.svg';
+                            if (nodes[parentFull]) {
+                                nodes[parentFull].children.push(fullName);
+                                childMap[fullName] = parentFull;
+                            } else {
+                                rootIds.push(fullName);
+                            }
+                        } else {
+                            rootIds.push(fullName);
+                        }
+                    });
+                    const uniqueRoots = [...new Set(rootIds)];
+                    const filteredRoots = uniqueRoots.filter(id => !childMap[id]);
+
+                    const root = {
+                        id: 'root',
+                        name: 'Корень',
+                        children: filteredRoots,
+                        loaded: true,
+                        svgContent: null,
+                        properties: {},
+                        stages: [],
+                    };
+
+                    const data = { root };
+                    Object.keys(nodes).forEach(key => { data[key] = nodes[key]; });
+                    return data;
+                }
+
+                /* ========================================================================
+                   ГРУППА 2: УПРАВЛЕНИЕ СОСТОЯНИЕМ (REDUCER)
+                   ======================================================================== */
+
+                const ACTION_TYPES = {
+                    SELECT_FILE: 'SELECT_FILE',
+                    CLICK_DIAGRAM: 'CLICK_DIAGRAM',
+                    CLEAR_ERROR: 'CLEAR_ERROR',
+                    LOG: 'LOG',
+                    SET_FILES: 'SET_FILES',
+                    LOAD_SVG: 'LOAD_SVG',
+                    EXPAND_ALL: 'EXPAND_ALL',
+                    COLLAPSE_ALL: 'COLLAPSE_ALL',
+                    SET_EXPANDED: 'SET_EXPANDED',
+                    SET_FOLDER_PATH: 'SET_FOLDER_PATH',
+                    SET_LOADING: 'SET_LOADING',
+                };
+
+                function createLogEntry(group, message) {
+                    const now = new Date();
+                    const time = now.toLocaleTimeString('ru-RU', { hour12: false });
+                    return { time, group, message };
+                }
+
+                const INITIAL_STATE = {
+                    data: null,
+                    selectedFile: null,
+                    uiState: 'NO_SELECTION',
+                    errorMessage: null,
+                    logs: [],
+                    expandedIds: new Set(),
+                    searchQuery: '',
+                    folderPath: '',
+                    fileHandles: {},
+                    isLoading: false,
+                };
+
+                function appReducer(state, action) {
+                    switch (action.type) {
+                        case ACTION_TYPES.SET_LOADING:
+                            return { ...state, isLoading: action.payload };
+                        case ACTION_TYPES.SET_FOLDER_PATH:
+                            return { ...state, folderPath: action.payload };
+                        case ACTION_TYPES.SET_FILES: {
+                            const { fileNames, fileHandles } = action.payload;
+                            const data = buildTreeFromFileNames(fileNames);
+                            const folderIds = Object.keys(data).filter(id => data[id].children && data[id].children.length > 0);
+                            const expanded = new Set(['root', ...folderIds]);
+                            const logEntry = createLogEntry('Система', `Загружено ${fileNames.length} файлов из папки`);
+                            return {
+                                ...state,
+                                data,
+                                expandedIds: expanded,
+                                fileHandles,
+                                logs: [...state.logs, logEntry],
+                                uiState: 'NO_SELECTION',
+                                selectedFile: null,
+                            };
+                        }
+                        case ACTION_TYPES.SELECT_FILE: {
+                            const { fileId } = action.payload;
+                            const node = state.data ? state.data[fileId] : null;
+                            if (!node) {
+                                return {
+                                    ...state,
+                                    logs: [...state.logs, createLogEntry('Ошибка', `Узел "${fileId}" не найден`)],
+                                };
+                            }
+                            let newUiState = 'FILE_SELECTED';
+                            let errorMessage = null;
+                            if (state.uiState === 'ERROR_NO_SELECTION') errorMessage = null;
+                            const isFile = !node.children || node.children.length === 0;
+                            const logEntry = isFile ?
+                                createLogEntry('Выбор', `Выбран файл "${node.name}"`) :
+                                null;
+                            const newLogs = isFile ? [...state.logs, logEntry] : state.logs;
+                            return {
+                                ...state,
+                                selectedFile: fileId,
+                                uiState: newUiState,
+                                errorMessage,
+                                logs: newLogs,
+                            };
+                        }
+                        case ACTION_TYPES.LOAD_SVG: {
+                            const { fileId, svgContent } = action.payload;
+                            const node = state.data[fileId];
+                            if (!node) return state;
+                            const stages = extractStagesFromSVG(svgContent);
+                            const properties = extractPropertiesFromSVG(svgContent);
+                            const updatedNode = {
+                                ...node,
+                                svgContent,
+                                stages,
+                                properties,
+                                loaded: true,
+                            };
+                            const newData = { ...state.data, [fileId]: updatedNode };
+                            const logEntry = createLogEntry('Загрузка', `Загружен SVG для "${node.name}" (${stages.length} этапов)`);
+                            return {
+                                ...state,
+                                data: newData,
+                                logs: [...state.logs, logEntry],
+                            };
+                        }
+                        case ACTION_TYPES.CLICK_DIAGRAM: {
+                            if (state.selectedFile === null) {
+                                const errorMsg = 'Не выбран элемент treeview';
+                                return {
+                                    ...state,
+                                    uiState: 'ERROR_NO_SELECTION',
+                                    errorMessage: errorMsg,
+                                    logs: [...state.logs, createLogEntry('Ошибка', errorMsg)],
+                                };
+                            }
+                            const node = state.data[state.selectedFile];
+                            if (node && node.children && node.children.length > 0) {
+                                return state;
+                            }
+                            const logEntry = createLogEntry('Диаграмма', `Просмотр диаграммы "${node ? node.name : state.selectedFile}"`);
+                            return {
+                                ...state,
+                                uiState: 'FILE_SELECTED',
+                                logs: [...state.logs, logEntry],
+                            };
+                        }
+                        case ACTION_TYPES.CLEAR_ERROR: {
+                            if (state.uiState === 'ERROR_NO_SELECTION') {
+                                return {
+                                    ...state,
+                                    uiState: 'NO_SELECTION',
+                                    errorMessage: null,
+                                    logs: [...state.logs, createLogEntry('Система', 'Ошибка сброшена')],
+                                };
+                            }
+                            return state;
+                        }
+                        case ACTION_TYPES.LOG: {
+                            const { message, group } = action.payload;
+                            return {
+                                ...state,
+                                logs: [...state.logs, createLogEntry(group || 'Система', message)],
+                            };
+                        }
+                        case ACTION_TYPES.EXPAND_ALL: {
+                            if (!state.data) return state;
+                            const allFolderIds = Object.keys(state.data).filter(id => state.data[id].children && state.data[id].children.length > 0);
+                            return {
+                                ...state,
+                                expandedIds: new Set(allFolderIds),
+                            };
+                        }
+                        case ACTION_TYPES.COLLAPSE_ALL: {
+                            return {
+                                ...state,
+                                expandedIds: new Set(['root']),
+                            };
+                        }
+                        case ACTION_TYPES.SET_EXPANDED: {
+                            const { expandedIds } = action.payload;
+                            return {
+                                ...state,
+                                expandedIds,
+                            };
+                        }
+                        default:
+                            return state;
+                    }
+                }
+
+                /* ========================================================================
+                   ГРУППА 3: РАБОТА С INDEXEDDB ДЛЯ СОХРАНЕНИЯ HANDLE
+                   ======================================================================== */
+
+                const DB_NAME = 'VADViewerDB';
+                const STORE_NAME = 'handles';
+                const KEY = 'folderHandle';
+
+                function openDB() {
+                    return new Promise((resolve, reject) => {
+                        const request = indexedDB.open(DB_NAME, 1);
+                        request.onupgradeneeded = (event) => {
+                            const db = event.target.result;
+                            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                                db.createObjectStore(STORE_NAME);
+                            }
+                        };
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    });
+                }
+
+                async function saveHandle(handle) {
+                    const db = await openDB();
+                    return new Promise((resolve, reject) => {
+                        const tx = db.transaction(STORE_NAME, 'readwrite');
+                        const store = tx.objectStore(STORE_NAME);
+                        store.put(handle, KEY);
+                        tx.oncomplete = () => resolve();
+                        tx.onerror = () => reject(tx.error);
+                    });
+                }
+
+                async function loadHandle() {
+                    const db = await openDB();
+                    return new Promise((resolve, reject) => {
+                        const tx = db.transaction(STORE_NAME, 'readonly');
+                        const store = tx.objectStore(STORE_NAME);
+                        const request = store.get(KEY);
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    });
+                }
+
+                /* ========================================================================
+                   ГРУППА 4: REACT-КОМПОНЕНТЫ
+                   ======================================================================== */
+
+                function LoadingScreen() {
+                    return React.createElement(
+                        'div',
+                        { style: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' } },
+                        React.createElement(
+                            'div',
+                            { style: { textAlign: 'center' } },
+                            React.createElement('div', { style: { fontSize: '48px', marginBottom: '20px' } }, '⏳'),
+                            React.createElement('h2', null, 'Загрузка файлов...'),
+                            React.createElement('p', { style: { color: '#64748b' } }, 'Пожалуйста, подождите')
+                        )
+                    );
+                }
+
+                function FolderSelector({ onSelectFolder }) {
+                    const handleSelect = async () => {
+                        try {
+                            const dirHandle = await window.showDirectoryPicker();
+                            onSelectFolder(dirHandle);
+                        } catch (err) {
+                            if (err.name !== 'AbortError') {
+                                alert('Ошибка при выборе папки: ' + err.message);
+                            }
+                        }
+                    };
+
+                    return React.createElement(
+                        'div',
+                        { style: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' } },
+                        React.createElement(
+                            'div',
+                            { style: { textAlign: 'center', padding: '40px' } },
+                            React.createElement('div', { style: { fontSize: '64px', marginBottom: '20px' } }, '📂'),
+                            React.createElement('h2', null, 'Выберите папку с SVG-файлами'),
+                            React.createElement('p', { style: { color: '#64748b', marginBottom: '20px' } },
+                                'В папке должны быть .svg файлы, имена которых определяют иерархию',
+                                React.createElement('br'),
+                                '(например, file1.svg, file1-1.svg, file1-2.svg, file2.svg, file2-1.svg)'
+                            ),
+                            React.createElement(
+                                'button',
+                                { className: 'btn btn-primary', onClick: handleSelect, style: { fontSize: '16px', padding: '10px 30px' } },
+                                'Выбрать папку'
+                            ),
+                            React.createElement('div', { style: { marginTop: '20px', fontSize: '13px', color: '#94a3b8' } },
+                                '(требуется браузер с поддержкой File System Access API)'
+                            )
+                        )
+                    );
+                }
+
+                function renderTreeNodes({
+                    nodeId,
+                    data,
+                    expandedIds,
+                    selectedId,
+                    searchQuery,
+                    onSelect,
+                    onToggle,
+                    depth = 0,
+                }) {
+                    const node = data[nodeId];
+                    if (!node) return null;
+
+                    function hasMatchInSubtree(id) {
+                        const n = data[id];
+                        if (!n) return false;
+                        if (n.name.toLowerCase().includes(searchQuery.toLowerCase())) return true;
+                        if (n.children) {
+                            for (const cid of n.children) {
+                                if (hasMatchInSubtree(cid)) return true;
+                            }
+                        }
+                        return false;
+                    }
+
+                    if (searchQuery && !hasMatchInSubtree(nodeId)) return null;
+
+                    const isSelected = (selectedId === nodeId);
+                    const isExpanded = expandedIds.has(nodeId);
+                    const hasChildren = node.children && node.children.length > 0;
+                    const icon = hasChildren ? '📁' : '📄';
+                    const status = node.loaded ? '✅' : (hasChildren ? '' : '⬇️');
+
+                    return React.createElement(
+                        'div',
+                        { key: nodeId },
+                        React.createElement(
+                            'div',
+                            {
+                                className: `tree-node ${isSelected ? 'selected' : ''}`,
+                                style: { paddingLeft: `${8 + depth * 20}px` },
+                                onClick: () => onSelect(nodeId),
+                            },
+                            React.createElement('span', { className: 'icon' }, icon),
+                            React.createElement('span', { className: 'label' }, node.name),
+                            React.createElement('span', { className: 'status' }, status),
+                            hasChildren && React.createElement(
+                                'span',
+                                {
+                                    className: `chevron ${isExpanded ? 'open' : ''}`,
+                                    onClick: (e) => { e.stopPropagation();
+                                        onToggle(nodeId); },
+                                },
+                                '▶'
+                            )
+                        ),
+                        hasChildren && isExpanded && React.createElement(
+                            'div',
+                            { className: 'tree-children' },
+                            node.children.map((childId) =>
+                                renderTreeNodes({
+                                    nodeId: childId,
+                                    data,
+                                    expandedIds,
+                                    selectedId,
+                                    searchQuery,
+                                    onSelect,
+                                    onToggle,
+                                    depth: depth + 1,
+                                })
+                            )
+                        )
+                    );
+                }
+
+                function TreeViewComponent({
+                    data,
+                    expandedIds,
+                    selectedFile,
+                    searchQuery,
+                    onSelectFile,
+                    onToggleExpand,
+                    onExpandAll,
+                    onCollapseAll,
+                    onSearchChange,
+                    onRefresh,
+                }) {
+                    const rootChildren = data && data['root'] ? data['root'].children || [] : [];
+                    return React.createElement(
+                        'div',
+                        { className: 'window' },
+                        React.createElement(
+                            'div',
+                            { className: 'window-header' },
+                            '📂 Дерево файлов (компонент TreeView)',
+                            React.createElement('span', { className: 'badge' }, data ? Object.keys(data).length - 1 : 0, ' узлов')
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'window-body' },
+                            React.createElement(
+                                'div',
+                                { className: 'treeview-toolbar' },
+                                React.createElement('input', {
+                                    type: 'text',
+                                    placeholder: 'Поиск...',
+                                    value: searchQuery,
+                                    onChange: (e) => onSearchChange(e.target.value),
+                                }),
+                                React.createElement('button', { className: 'btn', onClick: onExpandAll }, '🔽 Развернуть всё'),
+                                React.createElement('button', { className: 'btn', onClick: onCollapseAll }, '▶️ Свернуть всё'),
+                                React.createElement('button', { className: 'btn btn-warning', onClick: onRefresh }, '🔄 Обновить')
+                            ),
+                            React.createElement(
+                                'div',
+                                null,
+                                rootChildren.length === 0 ?
+                                    React.createElement('div', { className: 'tree-empty' }, 'Нет файлов в папке') :
+                                    rootChildren.map((childId) =>
+                                        renderTreeNodes({
+                                            nodeId: childId,
+                                            data,
+                                            expandedIds,
+                                            selectedId: selectedFile,
+                                            searchQuery,
+                                            onSelect: onSelectFile,
+                                            onToggle: onToggleExpand,
+                                            depth: 0,
+                                        })
+                                    )
+                            )
+                        )
+                    );
+                }
+
+                function PropertiesComponent({ fileId, data }) {
+                    const node = fileId && data ? data[fileId] : null;
+                    return React.createElement(
+                        'div',
+                        { className: 'window' },
+                        React.createElement(
+                            'div',
+                            { className: 'window-header' },
+                            '📋 Свойства (компонент Properties)',
+                            React.createElement('span', { className: 'badge' }, node ? node.name : 'не выбран')
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'window-body' },
+                            node ? React.createElement(
+                                'div',
+                                null,
+                                Object.entries(node.properties).length > 0 ?
+                                    Object.entries(node.properties).map(([k, v]) =>
+                                        React.createElement('div', { className: 'property-row', key: k },
+                                            React.createElement('span', { className: 'property-key' }, k),
+                                            React.createElement('span', { className: 'property-value' }, v)
+                                        )
+                                    ) :
+                                    React.createElement('div', { className: 'property-empty' }, 'Свойства не загружены (загрузите SVG-файл).'),
+                                React.createElement('div', { className: 'property-row', style: { borderTop: '2px solid #e9edf2', marginTop: '4px', paddingTop: '8px' } },
+                                    React.createElement('span', { className: 'property-key' }, 'Тип узла'),
+                                    React.createElement('span', { className: 'property-value' }, node.children && node.children.length > 0 ? '📁 Папка (группа)' : '📄 SVG-файл')
+                                ),
+                                React.createElement('div', { className: 'property-row' },
+                                    React.createElement('span', { className: 'property-key' }, 'Загружен'),
+                                    React.createElement('span', { className: 'property-value' }, node.loaded ? '✅ Да' : '❌ Нет')
+                                )
+                            ) :
+                                React.createElement('div', { className: 'property-empty' }, '✦ Выберите узел в дереве, чтобы увидеть свойства')
+                        )
+                    );
+                }
+
+                function DiagramComponent({ fileId, data, onDiagramClick, errorMessage }) {
+                    const node = fileId && data ? data[fileId] : null;
+                    const showError = errorMessage !== null;
+                    const svgContent = node && node.loaded ? node.svgContent : null;
+                    const isFolder = node && node.children && node.children.length > 0;
+
+                    return React.createElement(
+                        'div',
+                        { className: 'window diagram-window' },
+                        React.createElement(
+                            'div',
+                            { className: 'window-header' },
+                            '🎨 Диаграмма (компонент Diagram)',
+                            React.createElement('span', { className: 'badge' }, node ? node.name : 'не выбрано')
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'window-body', onClick: onDiagramClick, style: { cursor: 'pointer' } },
+                            React.createElement(
+                                'div',
+                                { className: 'diagram-container' },
+                                showError ? React.createElement(
+                                    'div',
+                                    { className: 'diagram-placeholder', style: { color: '#b91c1c' } },
+                                    React.createElement('span', { className: 'big-icon' }, '⚠️'),
+                                    errorMessage,
+                                    React.createElement('br'),
+                                    React.createElement('span', { style: { fontSize: '13px', color: '#94a3b8' } }, '(нажмите, чтобы закрыть)')
+                                ) : node && svgContent ? React.createElement('div', {
+                                    dangerouslySetInnerHTML: { __html: svgContent },
+                                    style: { width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }
+                                }) : node && !node.loaded && !isFolder ? React.createElement(
+                                    'div',
+                                    { className: 'diagram-placeholder' },
+                                    React.createElement('span', { className: 'big-icon' }, '📂'),
+                                    'Файл не загружен',
+                                    React.createElement('br'),
+                                    React.createElement('span', { style: { fontSize: '13px', color: '#94a3b8' } }, 'Нажмите на узел, чтобы загрузить SVG')
+                                ) : isFolder ? React.createElement(
+                                    'div',
+                                    { className: 'diagram-placeholder' },
+                                    React.createElement('span', { className: 'big-icon' }, '📁'),
+                                    'Это папка (группа файлов)',
+                                    React.createElement('br'),
+                                    React.createElement('span', { style: { fontSize: '13px', color: '#94a3b8' } }, 'Выберите файл внутри для просмотра диаграммы')
+                                ) : React.createElement(
+                                    'div',
+                                    { className: 'diagram-placeholder' },
+                                    React.createElement('span', { className: 'big-icon' }, '🖼️'),
+                                    'Выберите файл в дереве'
+                                )
+                            )
+                        )
+                    );
+                }
+
+                function LogComponent({ logs }) {
+                    return React.createElement(
+                        'div',
+                        { className: 'window log-window' },
+                        React.createElement(
+                            'div',
+                            { className: 'window-header' },
+                            '📜 Лог действий (компонент Log)',
+                            React.createElement('span', { className: 'badge' }, logs.length, ' записей')
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'window-body' },
+                            logs.length === 0 ?
+                                React.createElement('div', { className: 'log-empty' }, '✦ Лог пуст. Начните взаимодействие...') :
+                                logs.map((entry, idx) =>
+                                    React.createElement('div', { className: 'log-entry', key: idx },
+                                        React.createElement('span', { className: 'log-time' }, entry.time),
+                                        React.createElement('span', { className: 'log-group' }, entry.group),
+                                        React.createElement('span', { className: 'log-msg' }, entry.message)
+                                    )
+                                )
+                        )
+                    );
+                }
+
+                function ToastMessage({ message, visible }) {
+                    return React.createElement('div', { className: `toast-message ${visible ? '' : 'hidden'}` }, '⚠️ ', message);
+                }
+
+                /* ========================================================================
+                   ГРУППА 5: КОРНЕВОЙ КОМПОНЕНТ APP
+                   ======================================================================== */
+
+                function App() {
+                    const [state, dispatch] = React.useReducer(appReducer, INITIAL_STATE);
+                    const {
+                        data,
+                        selectedFile,
+                        uiState,
+                        errorMessage,
+                        logs,
+                        expandedIds,
+                        searchQuery,
+                        folderPath,
+                        fileHandles,
+                        isLoading,
+                    } = state;
+
+                    const [localSearch, setLocalSearch] = React.useState(searchQuery || '');
+
+                    React.useEffect(() => {
+                        if (localSearch.trim() !== '') {
+                            dispatch({ type: ACTION_TYPES.LOG, payload: { message: `Поиск: "${localSearch}"`, group: 'Поиск' } });
+                        }
+                    }, [localSearch]);
+
+                    const loadFolder = React.useCallback(async (handle) => {
+                        try {
+                            dispatch({ type: ACTION_TYPES.SET_LOADING, payload: true });
+                            const svgFiles = [];
+                            const handles = {};
+                            for await (const entry of handle.values()) {
+                                if (entry.kind === 'file' && entry.name.endsWith('.svg')) {
+                                    const name = entry.name;
+                                    svgFiles.push(name);
+                                    handles[name] = entry;
+                                }
+                            }
+                            if (svgFiles.length === 0) {
+                                alert('В выбранной папке нет SVG-файлов.');
+                                dispatch({ type: ACTION_TYPES.SET_LOADING, payload: false });
+                                return false;
+                            }
+                            dispatch({ type: ACTION_TYPES.SET_FOLDER_PATH, payload: handle.name });
+                            dispatch({ type: ACTION_TYPES.SET_FILES, payload: { fileNames: svgFiles, fileHandles: handles } });
+                            await saveHandle(handle);
+                            return true;
+                        } catch (err) {
+                            if (err.name !== 'AbortError') {
+                                alert('Ошибка при чтении папки: ' + err.message);
+                            }
+                            return false;
+                        } finally {
+                            dispatch({ type: ACTION_TYPES.SET_LOADING, payload: false });
+                        }
+                    }, []);
+
+                    React.useEffect(() => {
+                        let cancelled = false;
+                        (async () => {
+                            try {
+                                const savedHandle = await loadHandle();
+                                if (savedHandle && !cancelled) {
+                                    try {
+                                        const opts = { mode: 'read' };
+                                        const permission = await savedHandle.requestPermission(opts);
+                                        if (permission === 'granted') {
+                                            await loadFolder(savedHandle);
+                                            return;
+                                        }
+                                    } catch (e) { /* ignore */ }
+                                }
+                            } catch (err) {
+                                console.error('Ошибка при восстановлении папки:', err);
+                            }
+                        })();
+                        return () => { cancelled = true; };
+                    }, []);
+
+                    const handleSelectFolder = async (dirHandle) => {
+                        await loadFolder(dirHandle);
+                    };
+
+                    const handleSelectFile = (fileId) => {
+                        dispatch({ type: ACTION_TYPES.SELECT_FILE, payload: { fileId } });
+                        const node = data ? data[fileId] : null;
+                        if (node && (!node.children || node.children.length === 0) && !node.loaded) {
+                            const handle = fileHandles[fileId];
+                            if (handle) {
+                                handle.getFile().then(file => {
+                                    const reader = new FileReader();
+                                    reader.onload = (e) => {
+                                        const svgText = e.target.result;
+                                        dispatch({ type: ACTION_TYPES.LOAD_SVG, payload: { fileId, svgContent: svgText } });
+                                    };
+                                    reader.readAsText(file);
+                                }).catch(err => {
+                                    dispatch({ type: ACTION_TYPES.LOG, payload: { message: `Ошибка чтения файла ${fileId}: ${err.message}`, group: 'Ошибка' } });
+                                });
+                            }
+                        }
+                    };
+
+                    const handleDiagramClick = () => {
+                        if (uiState === 'ERROR_NO_SELECTION') {
+                            dispatch({ type: ACTION_TYPES.CLEAR_ERROR });
+                        } else {
+                            dispatch({ type: ACTION_TYPES.CLICK_DIAGRAM });
+                            if (selectedFile) {
+                                const node = data ? data[selectedFile] : null;
+                                if (node && (!node.children || node.children.length === 0) && !node.loaded) {
+                                    const handle = fileHandles[selectedFile];
+                                    if (handle) {
+                                        handle.getFile().then(file => {
+                                            const reader = new FileReader();
+                                            reader.onload = (e) => {
+                                                const svgText = e.target.result;
+                                                dispatch({ type: ACTION_TYPES.LOAD_SVG, payload: { fileId: selectedFile, svgContent: svgText } });
+                                            };
+                                            reader.readAsText(file);
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    };
+
+                    const handleToggleExpand = (nodeId) => {
+                        const newSet = new Set(expandedIds);
+                        if (newSet.has(nodeId)) newSet.delete(nodeId);
+                        else newSet.add(nodeId);
+                        dispatch({ type: ACTION_TYPES.SET_EXPANDED, payload: { expandedIds: newSet } });
+                    };
+
+                    const handleExpandAll = () => dispatch({ type: ACTION_TYPES.EXPAND_ALL });
+                    const handleCollapseAll = () => dispatch({ type: ACTION_TYPES.COLLAPSE_ALL });
+                    const handleSearchChange = (query) => setLocalSearch(query);
+
+                    const handleRefresh = async () => {
+                        try {
+                            const dirHandle = await window.showDirectoryPicker();
+                            await loadFolder(dirHandle);
+                        } catch (err) {
+                            if (err.name !== 'AbortError') {
+                                alert('Ошибка при выборе папки: ' + err.message);
+                            }
+                        }
+                    };
+
+                    if (isLoading) {
+                        return React.createElement(LoadingScreen);
+                    }
+
+                    if (!data) {
+                        return React.createElement(FolderSelector, { onSelectFolder: handleSelectFolder });
+                    }
+
+                    return React.createElement(
+                        'div',
+                        { style: { height: '100%', display: 'flex', flexDirection: 'column', gap: '8px' } },
+                        React.createElement(
+                            'div',
+                            { className: 'folder-info' },
+                            React.createElement('span', null, '📁 Папка:'),
+                            React.createElement('span', { className: 'path' }, folderPath || 'не выбрана'),
+                            React.createElement('span', { style: { fontSize: '11px', color: '#94a3b8' } },
+                                '(конфиг: ', window.CONFIG?.folderPath || 'не задан', ')'
+                            ),
+                            React.createElement('button', { className: 'btn btn-warning', onClick: handleRefresh, style: { marginLeft: 'auto' } }, '🔄 Выбрать другую')
+                        ),
+                        React.createElement(
+                            'div',
+                            { className: 'app-main' },
+                            React.createElement(
+                                'div',
+                                { className: 'left-panel' },
+                                React.createElement(TreeViewComponent, {
+                                    data,
+                                    expandedIds,
+                                    selectedFile,
+                                    searchQuery: localSearch,
+                                    onSelectFile: handleSelectFile,
+                                    onToggleExpand: handleToggleExpand,
+                                    onExpandAll: handleExpandAll,
+                                    onCollapseAll: handleCollapseAll,
+                                    onSearchChange: handleSearchChange,
+                                    onRefresh: handleRefresh,
+                                }),
+                                React.createElement(PropertiesComponent, { fileId: selectedFile, data })
+                            ),
+                            React.createElement(DiagramComponent, {
+                                fileId: selectedFile,
+                                data,
+                                onDiagramClick: handleDiagramClick,
+                                errorMessage: uiState === 'ERROR_NO_SELECTION' ? errorMessage : null,
+                            })
+                        ),
+                        React.createElement(LogComponent, { logs }),
+                        React.createElement(ToastMessage, {
+                            message: errorMessage || '',
+                            visible: uiState === 'ERROR_NO_SELECTION',
+                        })
+                    );
+                }
+
+                /* ========================================================================
+                   ГРУППА 6: РЕНДЕРИНГ
+                   ======================================================================== */
+
+                console.log('7. Подготовка к рендерингу');
+                const rootElement = document.getElementById('root');
+                if (!rootElement) {
+                    throw new Error('Элемент #root не найден в DOM');
+                }
+
+                console.log('8. Создание React root');
+                const root = ReactDOM.createRoot(rootElement);
+
+                console.log('9. Рендеринг приложения');
+                root.render(
+                    React.createElement(
+                        React.StrictMode,
+                        null,
+                        React.createElement(App)
+                    )
+                );
+                console.log('10. Рендеринг выполнен успешно');
+
+            } catch (error) {
+                console.error('КРИТИЧЕСКАЯ ОШИБКА при рендеринге:', error);
+                const root = document.getElementById('root');
+                if (root) {
+                    root.innerHTML = `
+                        <div style="color: red; padding: 20px; background: #fee; border: 2px solid red; margin: 20px; border-radius: 8px;">
+                            <h2>⚠️ Ошибка рендеринга приложения</h2>
+                            <p><strong>Сообщение:</strong> ${error.message}</p>
+                            <pre style="background: #f5f5f5; padding: 10px; overflow: auto; max-height: 300px;">${error.stack}</pre>
+                            <p>Проверьте консоль для получения дополнительной информации.</p>
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        // Запускаем рендеринг после загрузки DOM
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', renderApp);
+        } else {
+            renderApp();
+        }
+    </script>
+</body>
+</html>
