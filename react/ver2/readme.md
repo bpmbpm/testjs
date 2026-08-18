@@ -14,7 +14,7 @@
 ```mermaid
 graph TD
     A[Пользователь] -->|Выбирает папку| B[FolderSelector]
-    B -->|Список файлов и их handle| C[App (reducer)]
+    B -->|Список файлов и их handle| C[App reducer]
     C -->|ACTION.SET_FILES| D[Состояние: data, expandedIds]
     D --> E[TreeViewComponent]
     D --> F[PropertiesComponent]
